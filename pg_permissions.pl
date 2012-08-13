@@ -157,6 +157,7 @@ sub get_acl_class{
 	my $sql;
 	print 'database "'.$current_db.'"'."\n";
 	get_acl_schema();
+	get_acl_proc();
 	$sql  = "SELECT c.relkind,'\"' || n.nspname || '\".\"' || c.relname || '\"',r.rolname,"
 		." COALESCE(array_to_string(c.relacl,E'\\n'),'')"
 		." FROM pg_class c"
@@ -191,7 +192,7 @@ sub get_acl_class{
 
 sub get_acl_schema{
 	my $sql;
-	$sql = "SELECT n.nspname,pg_get_userbyid(n.nspowner),COALESCE(array_to_string(n.nspacl,E'\\n'),'')"
+	$sql = "SELECT '\"' || n.nspname || '\"n',pg_get_userbyid(n.nspowner),COALESCE(array_to_string(n.nspacl,E'\\n'),'')"
 		." FROM pg_namespace n WHERE n.nspname !~ '^pg_' AND n.nspname <> 'information_schema';";
 	$req = $db->prepare($sql);
 	$req->execute();
@@ -212,9 +213,38 @@ sub get_acl_schema{
 	$req->finish();
 }
 
+sub get_acl_proc{
+	my $sql;
+	$sql  = "SELECT '\"' || n.nspname || '\".\"' || p.proname || '\"',r.rolname,"
+		." COALESCE(array_to_string(p.proacl,E'\\n'),'')"
+		." FROM pg_proc p"
+		." JOIN pg_namespace n ON p.pronamespace = n.oid"
+		." JOIN pg_roles r ON p.proowner = r.oid"
+		." WHERE n.nspname !~ 'pg_'"
+		." AND n.nspname != 'information_schema'"
+		." ORDER BY proname;";
+	$req = $db->prepare($sql);
+	$req->execute();
+	my $current_obj = '';
+	while (@tab = $req->fetchrow_array()){
+		print "  Function $tab[0]\n";
+		my @tabacl = split('\n',$tab[2]);
+		print "    Default\n" if($tab[2] eq '');
+		foreach my $acl (@tabacl){
+			my $first_delim = index($acl,'=');
+			my $current_role = substr($acl,0,$first_delim);
+			if (!(($role ne '') && ($role ne $current_role))){
+				print "    Role ".$current_role.": ".acl2char(substr($acl,$first_delim+1,index($acl,'/')-$first_delim-1));
+				print " (owner)" if ($current_role eq $tab[2]);
+				print("\n");
+			}
+		}
+	}
+	$req->finish();
+}
 sub get_acl_tablespace{
 	my $sql;
-	$sql = "SELECT spcname, pg_get_userbyid(spcowner),COALESCE(array_to_string(spcacl,E'\\n'),'')"
+	$sql = "SELECT '\"' || spcname || '\"', pg_get_userbyid(spcowner),COALESCE(array_to_string(spcacl,E'\\n'),'')"
 		." FROM pg_tablespace";
 	$req = $db->prepare($sql);
 	$req->execute();
@@ -263,6 +293,8 @@ sub acl2char{
 
 		$result.="USAGE"	if ($c eq 'U');
 		$result.="CREATE"	if ($c eq 'C');
+
+		$result.="EXECUTE"	if ($c eq 'X');
 	}
 	return $result;
 }
