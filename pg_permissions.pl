@@ -55,7 +55,10 @@ if ($dbname eq ''){
 }
 
 get_acl_roles();
-get_acl_tablespace();
+
+my $sql = "SELECT '\"' || spcname || '\"', pg_get_userbyid(spcowner),COALESCE(array_to_string(spcacl,E'\\n'),'')"
+		." FROM pg_tablespace";
+get_acl_prm($sql,"Tablespace");
 
 foreach my $current_db (@dblist){
 	get_db_permissions($current_db);
@@ -156,8 +159,21 @@ sub get_acl_class{
 	my ($current_db) = @_;
 	my $sql;
 	print 'database "'.$current_db.'"'."\n";
-	get_acl_schema();
-	get_acl_proc();
+
+	$sql = "SELECT '\"' || n.nspname || '\"n',pg_get_userbyid(n.nspowner),COALESCE(array_to_string(n.nspacl,E'\\n'),'')"
+		." FROM pg_namespace n WHERE n.nspname !~ '^pg_' AND n.nspname <> 'information_schema';";
+	get_acl_prm($sql,'Schema');
+
+	$sql  = "SELECT '\"' || n.nspname || '\".\"' || p.proname || '\"',r.rolname,"
+		." COALESCE(array_to_string(p.proacl,E'\\n'),'')"
+		." FROM pg_proc p"
+		." JOIN pg_namespace n ON p.pronamespace = n.oid"
+		." JOIN pg_roles r ON p.proowner = r.oid"
+		." WHERE n.nspname !~ 'pg_'"
+		." AND n.nspname != 'information_schema'"
+		." ORDER BY proname;";
+	get_acl_prm($sql,'Function');
+
 	$sql  = "SELECT c.relkind,'\"' || n.nspname || '\".\"' || c.relname || '\"',r.rolname,"
 		." COALESCE(array_to_string(c.relacl,E'\\n'),'')"
 		." FROM pg_class c"
@@ -190,14 +206,13 @@ sub get_acl_class{
 	$req->finish();
 }
 
-sub get_acl_schema{
-	my $sql;
-	$sql = "SELECT '\"' || n.nspname || '\"n',pg_get_userbyid(n.nspowner),COALESCE(array_to_string(n.nspacl,E'\\n'),'')"
-		." FROM pg_namespace n WHERE n.nspname !~ '^pg_' AND n.nspname <> 'information_schema';";
+sub get_acl_prm{
+	my($sql,$kind) = @_;
+
 	$req = $db->prepare($sql);
 	$req->execute();
 	while (@tab = $req->fetchrow_array()){
-		print "  Schema $tab[0]\n";
+		print "  $kind $tab[0]\n";
 		my @tabacl = split('\n',$tab[2]);
 		print "    Default\n" if($tab[2] eq '');
 		foreach my $acl (@tabacl){
@@ -211,60 +226,9 @@ sub get_acl_schema{
 		}
 	}
 	$req->finish();
+
 }
 
-sub get_acl_proc{
-	my $sql;
-	$sql  = "SELECT '\"' || n.nspname || '\".\"' || p.proname || '\"',r.rolname,"
-		." COALESCE(array_to_string(p.proacl,E'\\n'),'')"
-		." FROM pg_proc p"
-		." JOIN pg_namespace n ON p.pronamespace = n.oid"
-		." JOIN pg_roles r ON p.proowner = r.oid"
-		." WHERE n.nspname !~ 'pg_'"
-		." AND n.nspname != 'information_schema'"
-		." ORDER BY proname;";
-	$req = $db->prepare($sql);
-	$req->execute();
-	my $current_obj = '';
-	while (@tab = $req->fetchrow_array()){
-		print "  Function $tab[0]\n";
-		my @tabacl = split('\n',$tab[2]);
-		print "    Default\n" if($tab[2] eq '');
-		foreach my $acl (@tabacl){
-			my $first_delim = index($acl,'=');
-			my $current_role = substr($acl,0,$first_delim);
-			if (!(($role ne '') && ($role ne $current_role))){
-				print "    Role ".$current_role.": ".acl2char(substr($acl,$first_delim+1,index($acl,'/')-$first_delim-1));
-				print " (owner)" if ($current_role eq $tab[2]);
-				print("\n");
-			}
-		}
-	}
-	$req->finish();
-}
-sub get_acl_tablespace{
-	my $sql;
-	$sql = "SELECT '\"' || spcname || '\"', pg_get_userbyid(spcowner),COALESCE(array_to_string(spcacl,E'\\n'),'')"
-		." FROM pg_tablespace";
-	$req = $db->prepare($sql);
-	$req->execute();
-	while(@tab = $req->fetchrow_array()){
-		print "  Tablespace $tab[0]\n";
-		my @tabacl = split('\n',$tab[2]);
-		print "    Default\n" if ($tab[2] eq '');
-		foreach my $acl (@tabacl){
-			my $first_delim = index($acl,"=");
-			my $current_role = substr($acl,0,$first_delim);
-			if (!(($role ne '') && ($role ne $current_role))){
-				print "    Role ".($current_role eq ''?"public":$current_role).": ".acl2char(substr($acl,$first_delim+1,index($acl,'/')-$first_delim-1));
-				print " (owner)" if ($current_role eq $tab[1]);
-				print("\n");
-			}
-		}
-	}
-	$req->finish();
-}
-	
 sub get_type_obj{
 	my ($relkind) = @_;
 	return 'Table' if ($relkind eq 'r');
