@@ -146,12 +146,12 @@ sub get_acl_roles{
 	$req = $db->prepare($sql);
 	$req->execute();
 	while(@tab = $req->fetchrow_array()){
-		print "  Role $tab[0]:".($tab[1]?" Super":"").($tab[2]?" Inherit":"").($tab[3]?" Create_role":"").($tab[4]?" Create_db":"")
+		print "  Role \"$tab[0]\":".($tab[1]?" Super":"").($tab[2]?" Inherit":"").($tab[3]?" Create_role":"").($tab[4]?" Create_db":"")
 		.($tab[5]?" Catalog_update":"").($tab[6]?" Login":"").((hasmajor(9.0) && ($tab[8]))?" Replication":"")."\n";
 		if (@{$tab[7]} > 0){
 			print "    Member of : ";
 			foreach my $cur (@{$tab[7]}){
-				print $cur." ";
+				print "\"$cur\" ";
 			}
 			print "\n";
 		}
@@ -164,7 +164,7 @@ sub get_acl_class{
 	my $sql;
 	print 'database "'.$current_db.'"'."\n";
 
-	$sql = "SELECT '\"' || n.nspname || '\"n',pg_get_userbyid(n.nspowner),COALESCE(array_to_string(n.nspacl,E'\\n'),'')"
+	$sql = "SELECT '\"' || n.nspname || '\"',pg_get_userbyid(n.nspowner),COALESCE(array_to_string(n.nspacl,E'\\n'),'')"
 		." FROM pg_namespace n WHERE n.nspname !~ '^pg_' AND n.nspname <> 'information_schema';";
 	get_acl_prm($sql,'Schema');
 
@@ -216,7 +216,9 @@ sub get_acl_class{
 				foreach my $acl2 (@tabacl2){
 					my $first_delim2 = index($acl2,'=');
 					my $current_role2 = substr($acl2,0,$first_delim2);
-					print "    Column $tab2[0], Role \"$current_role2\" : ".acl2char(substr($acl2,$first_delim2+1,index($acl2,'/')-$first_delim2-1))."\n";
+					if (!(($role ne '') && ($role ne $current_role2))){
+						print "    Column $tab2[0], Role \"$current_role2\" : ".acl2char(substr($acl2,$first_delim2+1,index($acl2,'/')-$first_delim2-1))."\n";
+					}
 				}
 			}
 		}
@@ -237,7 +239,7 @@ sub get_acl_prm{
 			my $first_delim = index($acl,"=");
 			my $current_role = substr($acl,0,$first_delim);
 			if (!(($role ne '') && ($role ne $current_role))){
-				print "    Role ".($current_role eq ''?"public":$current_role).": ".acl2char(substr($acl,$first_delim+1,index($acl,'/')-$first_delim-1));
+				print "    Role \"".($current_role eq ''?"public":$current_role)."\": ".acl2char(substr($acl,$first_delim+1,index($acl,'/')-$first_delim-1));
 				print " (owner)" if ($current_role eq $tab[1]);
 				print("\n");
 			}
