@@ -55,6 +55,8 @@ if ($dbname eq ''){
 }
 
 get_acl_roles();
+get_acl_tablespace();
+
 foreach my $current_db (@dblist){
 	get_db_permissions($current_db);
 }
@@ -153,7 +155,8 @@ sub get_acl_roles{
 sub get_acl_class{
 	my ($current_db) = @_;
 	my $sql;
-	print 'database "'.$current_db.'"';
+	print 'database "'.$current_db.'"'."\n";
+	get_acl_schema();
 	$sql  = "SELECT c.relkind,'\"' || n.nspname || '\".\"' || c.relname || '\"',r.rolname,"
 		." COALESCE(array_to_string(c.relacl,E'\\n'),'')"
 		." FROM pg_class c"
@@ -163,16 +166,16 @@ sub get_acl_class{
 		." AND n.nspname != 'information_schema'"
 		." AND relkind NOT IN ('i')"
 		." ORDER BY relkind,relname;";
-	#print $sql;
 	$req = $db->prepare($sql);
 	$req->execute();
 	my $current_obj = '';
 	while (@tab = $req->fetchrow_array()){
 		if ($tab[1] ne $current_obj){
-			print "\n  ".get_type_obj($tab[0])." $tab[1]\n";
+			print "  ".get_type_obj($tab[0])." $tab[1]\n";
 			$current_obj = $tab [1];
 		}
 		my @tabacl = split('\n',$tab[3]);
+		print "    Default\n" if($tab[3] eq '');
 		foreach my $acl (@tabacl){
 			my $first_delim = index($acl,'=');
 			my $current_role = substr($acl,0,$first_delim);
@@ -185,6 +188,53 @@ sub get_acl_class{
 	}
 	$req->finish();
 }
+
+sub get_acl_schema{
+	my $sql;
+	$sql = "SELECT n.nspname,pg_get_userbyid(n.nspowner),COALESCE(array_to_string(n.nspacl,E'\\n'),'')"
+		." FROM pg_namespace n WHERE n.nspname !~ '^pg_' AND n.nspname <> 'information_schema';";
+	$req = $db->prepare($sql);
+	$req->execute();
+	while (@tab = $req->fetchrow_array()){
+		print "  Schema $tab[0]\n";
+		my @tabacl = split('\n',$tab[2]);
+		print "    Default\n" if($tab[2] eq '');
+		foreach my $acl (@tabacl){
+			my $first_delim = index($acl,"=");
+			my $current_role = substr($acl,0,$first_delim);
+			if (!(($role ne '') && ($role ne $current_role))){
+				print "    Role ".($current_role eq ''?"public":$current_role).": ".acl2char(substr($acl,$first_delim+1,index($acl,'/')-$first_delim-1));
+				print " (owner)" if ($current_role eq $tab[1]);
+				print("\n");
+			}
+		}
+	}
+	$req->finish();
+}
+
+sub get_acl_tablespace{
+	my $sql;
+	$sql = "SELECT spcname, pg_get_userbyid(spcowner),COALESCE(array_to_string(spcacl,E'\\n'),'')"
+		." FROM pg_tablespace";
+	$req = $db->prepare($sql);
+	$req->execute();
+	while(@tab = $req->fetchrow_array()){
+		print "  Tablespace $tab[0]\n";
+		my @tabacl = split('\n',$tab[2]);
+		print "    Default\n" if ($tab[2] eq '');
+		foreach my $acl (@tabacl){
+			my $first_delim = index($acl,"=");
+			my $current_role = substr($acl,0,$first_delim);
+			if (!(($role ne '') && ($role ne $current_role))){
+				print "    Role ".($current_role eq ''?"public":$current_role).": ".acl2char(substr($acl,$first_delim+1,index($acl,'/')-$first_delim-1));
+				print " (owner)" if ($current_role eq $tab[1]);
+				print("\n");
+			}
+		}
+	}
+	$req->finish();
+}
+	
 sub get_type_obj{
 	my ($relkind) = @_;
 	return 'Table' if ($relkind eq 'r');
@@ -203,13 +253,16 @@ sub acl2char{
 	my $result = '';
 	foreach my $c (split(//,$acl)){
 		$result.=',' if ($result ne '');
-		$result.="INSERT" if ($c eq 'a');
-		$result.="SELECT" if ($c eq 'r');
-		$result.="UPDATE" if ($c eq 'w');
-		$result.="DELETE" if ($c eq 'd');
-		$result.="TRUNCATE" if ($c eq 'D');
-		$result.="REFERENCES" if ($c eq 'x');
-		$result.="TRIGGER" if ($c eq 't');
+		$result.="INSERT"	if ($c eq 'a');
+		$result.="SELECT"	if ($c eq 'r');
+		$result.="UPDATE"	if ($c eq 'w');
+		$result.="DELETE"	if ($c eq 'd');
+		$result.="TRUNCATE"	if ($c eq 'D');
+		$result.="REFERENCES"	if ($c eq 'x');
+		$result.="TRIGGER"	if ($c eq 't');
+
+		$result.="USAGE"	if ($c eq 'U');
+		$result.="CREATE"	if ($c eq 'C');
 	}
 	return $result;
 }
