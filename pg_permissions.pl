@@ -56,9 +56,13 @@ if ($dbname eq ''){
 
 get_acl_roles();
 
-my $sql = "SELECT '\"' || spcname || '\"', pg_get_userbyid(spcowner),COALESCE(array_to_string(spcacl,E'\\n'),'')"
+my $sql2 = "SELECT '\"' || spcname || '\"', pg_get_userbyid(spcowner),COALESCE(array_to_string(spcacl,E'\\n'),'')"
 		." FROM pg_tablespace";
-get_acl_prm($sql,"Tablespace");
+get_acl_prm($sql2,"Tablespace");
+
+$sql2 = "SELECT '\"' || lanname || '\"', pg_get_userbyid(lanowner),COALESCE(array_to_string(lanacl,E'\\n'),'')"
+		." FROM pg_language";
+get_acl_prm($sql2,"Language");
 
 foreach my $current_db (@dblist){
 	get_db_permissions($current_db);
@@ -174,8 +178,8 @@ sub get_acl_class{
 		." ORDER BY proname;";
 	get_acl_prm($sql,'Function');
 
-	$sql  = "SELECT c.relkind,'\"' || n.nspname || '\".\"' || c.relname || '\"',r.rolname,"
-		." COALESCE(array_to_string(c.relacl,E'\\n'),'')"
+	$sql  = "SELECT c.relkind,'\"' || n.nspname || '\".\"' || c.relname || '\"',r.rolname ,"
+		." COALESCE(array_to_string(c.relacl,E'\\n'),''),c.oid"
 		." FROM pg_class c"
 		." JOIN pg_namespace n ON c.relnamespace = n.oid"
 		." JOIN pg_roles r ON c.relowner = r.oid"
@@ -197,9 +201,23 @@ sub get_acl_class{
 			my $first_delim = index($acl,'=');
 			my $current_role = substr($acl,0,$first_delim);
 			if (!(($role ne '') && ($role ne $current_role))){
-				print "    Role ".$current_role.": ".acl2char(substr($acl,$first_delim+1,index($acl,'/')-$first_delim-1));
+				print "    Role \"".$current_role."\": ".acl2char(substr($acl,$first_delim+1,index($acl,'/')-$first_delim-1));
 				print " (owner)" if ($current_role eq $tab[2]);
 				print("\n");
+			}
+		}
+		if(hasmajor(8.4)){
+			my $sql2 = "SELECT '\"' || attname || '\"',COALESCE(array_to_string(attacl,E'\\n'),'')"
+				." FROM pg_attribute WHERE attrelid = $tab[4] AND attacl IS NOT NULL;";
+			my $req2 = $db->prepare($sql2);
+			$req2->execute();
+			while(my @tab2 = $req2->fetchrow_array()){
+				my @tabacl2 = split('\n',$tab2[1]);
+				foreach my $acl2 (@tabacl2){
+					my $first_delim2 = index($acl2,'=');
+					my $current_role2 = substr($acl2,0,$first_delim2);
+					print "    Column $tab2[0], Role \"$current_role2\" : ".acl2char(substr($acl2,$first_delim2+1,index($acl2,'/')-$first_delim2-1))."\n";
+				}
 			}
 		}
 	}
