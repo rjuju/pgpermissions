@@ -13,10 +13,10 @@ use vars qw($VERSION);
 use strict;
 use warnings;
 use DBI;
-use Getopt::Long;
-use IO::File;
+use Getopt::Long qw(:config no_ignore_case bundling);
+#use IO::File;
 
-$VERSION = '0.1';
+$VERSION = '0.2';
 
 # Command line options
 my $dbname			= '';
@@ -34,6 +34,8 @@ my @tab				= undef;
 my $req				= undef;
 my $conninfo			= '';
 my $pgversion			= undef;
+my $ver				= '';
+my $help			= '';
 my $escape_char			= '';
 my $role_table			= 'pg_roles';
 my $role_table_pk		= 'oid';
@@ -41,20 +43,30 @@ my $role_table_name		= 'rolname';
 
 my $result = GetOptions(
 	"h|host=s"		=> \$host,
+	"H|help!"		=> \$help,
 	"p|port=i"		=> \$port,
 	"U|user=s"		=> \$user,
 	"o|outfiles=s"		=> \$outfile,
 	"r|role=s"		=> \$role,
-	"d|dbname=s"		=> \$dbname
+	"d|dbname=s"		=> \$dbname,
+	"V|version!"		=> \$ver
 );
 
+if ($ver){
+	print "pg_permissions version $VERSION\n";
+	exit 0;
+}
+&usage() if ($help);
+print "1\n";
+# Connect to database and initialize version specific parameters
 connect_db();
+print "2\n";
+$pgversion = get_pgversion();
+print $pgversion;exit 0;
 $escape_char='E' if (hasmajor(8.1));
 $role_table='pg_user' if (!hasmajor(8.1));
 $role_table_pk='usesysid' if (!hasmajor(8.1));
 $role_table_name='usename' if (!hasmajor(8.1));
-
-$pgversion = get_pgversion();
 
 if ($dbname eq ''){
 	@dblist = get_db_list();
@@ -83,6 +95,9 @@ foreach my $current_db (@dblist){
 print "\n";
 disconnect_db();
 
+#------------------------------------------------------------------------------
+
+# Build the connection string with specified arguments
 sub build_conninfo{
 	my ($current_db) = @_;
 	$conninfo = 'dbi:Pg:';
@@ -90,12 +105,17 @@ sub build_conninfo{
 	$conninfo .= " port=$port" if ($port ne '');
 	$conninfo .= " host=$host" if ($host ne '');
 	if ((! defined $current_db) || ( $current_db eq '')){
-		$conninfo .= " dbname=postgres";
+		$conninfo .= " dbname=postgres"; #.(hasmajor(8.2)?"postgres":'template1');
 	}else{
 		$conninfo .= " dbname=$current_db";
 	}
 }
 
+#------------------------------------------------------------------------------
+
+# Connect to a database
+# args:
+#    $force	: force to disconnect if already connected
 sub connect_db{
 	my ($force) = @_;
 	if (($force) && ($connected)){
@@ -107,6 +127,9 @@ sub connect_db{
 	$connected = 1;
 }
 
+#------------------------------------------------------------------------------
+
+# Disconnect from database
 sub disconnect_db{
 	if ($connected){
 		$db->disconnect();
@@ -114,6 +137,9 @@ sub disconnect_db{
 	}
 }
 
+#------------------------------------------------------------------------------
+
+# Return PostgreSQL's major version
 sub get_pgversion{
 	$req = $db->prepare("SELECT version();");
 	$req->execute();
@@ -122,10 +148,18 @@ sub get_pgversion{
 	return substr($tab[0],11,3);
 }
 
+#------------------------------------------------------------------------------
+
+# Check if PostgreSQL cluster major version is recent enough
+# returns boolean
 sub hasmajor{
 	my ($wanted_version) = @_;
 	return ($pgversion >= $wanted_version);
 }
+
+#------------------------------------------------------------------------------
+
+# Retrieve all databases except templates one
 sub get_db_list{
 	$req = $db->prepare("SELECT datname FROM pg_database WHERE NOT datistemplate ORDER BY datname;");
 	$req->execute();
@@ -137,6 +171,11 @@ sub get_db_list{
 	return @list;
 }
 
+#------------------------------------------------------------------------------
+
+#  Connect to a specific database and retrieve ACLs
+# args:
+#    $current_db	: database to connect on
 sub get_db_permissions{
 	my ($current_db) = @_;
 	build_conninfo($current_db);
@@ -144,6 +183,9 @@ sub get_db_permissions{
 	get_acl_class($current_db);
 }
 
+#------------------------------------------------------------------------------
+
+# Get role ACLs (database wild)
 sub get_acl_roles{
 	print "Global\n";
 	my $sql;
@@ -178,6 +220,11 @@ sub get_acl_roles{
 	$req->finish();
 }
 
+#------------------------------------------------------------------------------
+
+# Get all database specific ACLs on a database
+# args:
+#    $current_db	: chosen database
 sub get_acl_class{
 	my ($current_db) = @_;
 	my $sql;
@@ -245,6 +292,12 @@ sub get_acl_class{
 	$req->finish();
 }
 
+#------------------------------------------------------------------------------
+
+# Generic function to display ACL on an object kind
+# args:
+#    $sql	: query that return object name,owner,ACLs
+#    $kind	: Kind of object
 sub get_acl_prm{
 	my($sql,$kind) = @_;
 
@@ -268,6 +321,9 @@ sub get_acl_prm{
 
 }
 
+#------------------------------------------------------------------------------
+
+# Transform PostgreSQL's relkind into human readable
 sub get_type_obj{
 	my ($relkind) = @_;
 	return 'Table' if ($relkind eq 'r');
@@ -279,6 +335,9 @@ sub get_type_obj{
 	return 'Foreign Table' if ($relkind eq 'f');
 }
 
+#------------------------------------------------------------------------------
+
+# Transform PostgreSQL's ACL into human readable
 sub acl2char{
 	my ($acl) = @_;
 	return "ALL" if ($acl eq "arwdDxt");
@@ -302,15 +361,25 @@ sub acl2char{
 	return $result;
 }
 
+#------------------------------------------------------------------------------
 
-exit;
+# Show pg_permissions command line usage
+sub usage{
+	print qq{
+Usage: pg_permissions [options]
 
-$db = DBI->connect('dbi:Pg:user=postgres dbname=test') or die('Could not connect to the database');
+	A simple tool to summarize all ACL on a PostgreSQL cluster.
 
-$req = $db->prepare("SELECT oid,relname,relkind FROM pg_class;");
-$req->execute();
+Otions:
 
-while ( @tab = $req->fetchrow_array() ){
-	print @tab, "\n";
+	-d | --dbname			: limit result to a single database.
+	-h | --host hostname		: host to connect on.
+	-H | --help			: show this message and exit.
+	-p | --port port_number		: port to connect on.
+	-r | --role rolename		: limit result to a single role name.
+	-U | --user username		: username to use to connect.
+	-V | --version			: show pg_permissions version and exit.
+
+};
+	exit 0;
 }
-
