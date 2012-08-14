@@ -34,6 +34,10 @@ my @tab				= undef;
 my $req				= undef;
 my $conninfo			= '';
 my $pgversion			= undef;
+my $escape_char			= '';
+my $role_table			= 'pg_roles';
+my $role_table_pk		= 'oid';
+my $role_table_name		= 'rolname';
 
 my $result = GetOptions(
 	"h|host=s"		=> \$host,
@@ -45,6 +49,10 @@ my $result = GetOptions(
 );
 
 connect_db();
+$escape_char='E' if (hasmajor(8.1));
+$role_table='pg_user' if (!hasmajor(8.1));
+$role_table_pk='usesysid' if (!hasmajor(8.1));
+$role_table_name='usename' if (!hasmajor(8.1));
 
 $pgversion = get_pgversion();
 
@@ -56,11 +64,15 @@ if ($dbname eq ''){
 
 get_acl_roles();
 
-my $sql2 = "SELECT '\"' || spcname || '\"', pg_get_userbyid(spcowner),COALESCE(array_to_string(spcacl,E'\\n'),'')"
-		." FROM pg_tablespace";
-get_acl_prm($sql2,"Tablespace");
+my $sql2;
 
-$sql2 = "SELECT '\"' || lanname || '\"', pg_get_userbyid(lanowner),COALESCE(array_to_string(lanacl,E'\\n'),'')"
+if (hasmajor(8.0)){
+	$sql2 = "SELECT '\"' || spcname || '\"', pg_get_userbyid(spcowner),COALESCE(array_to_string(spcacl,$escape_char'\\n'),'')"
+		." FROM pg_tablespace";
+	get_acl_prm($sql2,"Tablespace");
+}
+
+$sql2 = "SELECT '\"' || lanname || '\"', ".(hasmajor(8.3)?'pg_get_userbyid(lanowner)':"''").",COALESCE(array_to_string(lanacl,$escape_char'\\n'),'')"
 		." FROM pg_language";
 get_acl_prm($sql2,"Language");
 
@@ -134,21 +146,28 @@ sub get_db_permissions{
 
 sub get_acl_roles{
 	print "Global\n";
-	my $sql = "SELECT r.rolname,r.rolsuper,r.rolinherit,r.rolcreaterole,r.rolcreatedb,r.rolcatupdate,"
-		."r.rolcanlogin,"
-		."ARRAY(SELECT b.rolname"
-		."	FROM pg_catalog.pg_auth_members m"
-		."	JOIN pg_catalog.pg_roles b ON (m.roleid = b.oid)"
-		."	WHERE m.member = r.oid) as memberof"
-		.(hasmajor(9.0)?",r.rolreplication":"")
-		." FROM pg_roles r".($role ne ''?" WHERE r.rolname = '$role'":"");
+	my $sql;
+	if (hasmajor(8.1)){
+		$sql = "SELECT r.rolname,r.rolsuper,r.rolinherit,r.rolcreaterole,r.rolcreatedb,r.rolcatupdate,"
+			."r.rolcanlogin,"
+			."ARRAY(SELECT b.rolname"
+			."	FROM pg_catalog.pg_auth_members m"
+			."	JOIN pg_catalog.pg_roles b ON (m.roleid = b.oid)"
+			."	WHERE m.member = r.oid) as memberof"
+			.(hasmajor(9.0)?",r.rolreplication":"")
+			." FROM pg_roles r".($role ne ''?" WHERE r.rolname = '$role'":"");
+	}else{
+		$sql = "SELECT r.usename,r.usesuper,false,false,r.usecreatedb,r.usecatupd,true,"
+			."null"
+			."  FROM pg_user r".($role ne ''?" WHERE r.usename = '$role'":"");
+	}
 
 	$req = $db->prepare($sql);
 	$req->execute();
 	while(@tab = $req->fetchrow_array()){
 		print "  Role \"$tab[0]\":".($tab[1]?" Super":"").($tab[2]?" Inherit":"").($tab[3]?" Create_role":"").($tab[4]?" Create_db":"")
 		.($tab[5]?" Catalog_update":"").($tab[6]?" Login":"").((hasmajor(9.0) && ($tab[8]))?" Replication":"")."\n";
-		if (@{$tab[7]} > 0){
+		if ( (defined(@{$tab[7]}))){
 			print "    Member of : ";
 			foreach my $cur (@{$tab[7]}){
 				print "\"$cur\" ";
@@ -164,25 +183,25 @@ sub get_acl_class{
 	my $sql;
 	print 'database "'.$current_db.'"'."\n";
 
-	$sql = "SELECT '\"' || n.nspname || '\"',pg_get_userbyid(n.nspowner),COALESCE(array_to_string(n.nspacl,E'\\n'),'')"
+	$sql = "SELECT '\"' || n.nspname || '\"',pg_get_userbyid(n.nspowner),COALESCE(array_to_string(n.nspacl,$escape_char'\\n'),'')"
 		." FROM pg_namespace n WHERE n.nspname !~ '^pg_' AND n.nspname <> 'information_schema';";
 	get_acl_prm($sql,'Schema');
 
-	$sql  = "SELECT '\"' || n.nspname || '\".\"' || p.proname || '\"',r.rolname,"
-		." COALESCE(array_to_string(p.proacl,E'\\n'),'')"
+	$sql  = "SELECT '\"' || n.nspname || '\".\"' || p.proname || '\"',r.$role_table_name,"
+		." COALESCE(array_to_string(p.proacl,$escape_char'\\n'),'')"
 		." FROM pg_proc p"
 		." JOIN pg_namespace n ON p.pronamespace = n.oid"
-		." JOIN pg_roles r ON p.proowner = r.oid"
+		." JOIN $role_table r ON p.proowner = r.$role_table_pk"
 		." WHERE n.nspname !~ 'pg_'"
 		." AND n.nspname != 'information_schema'"
 		." ORDER BY proname;";
 	get_acl_prm($sql,'Function');
 
-	$sql  = "SELECT c.relkind,'\"' || n.nspname || '\".\"' || c.relname || '\"',r.rolname ,"
-		." COALESCE(array_to_string(c.relacl,E'\\n'),''),c.oid"
+	$sql  = "SELECT c.relkind,'\"' || n.nspname || '\".\"' || c.relname || '\"',r.$role_table_name ,"
+		." COALESCE(array_to_string(c.relacl,$escape_char'\\n'),''),c.oid"
 		." FROM pg_class c"
 		." JOIN pg_namespace n ON c.relnamespace = n.oid"
-		." JOIN pg_roles r ON c.relowner = r.oid"
+		." JOIN $role_table r ON c.relowner = r.$role_table_pk"
 		." WHERE n.nspname !~ 'pg_'"
 		." AND n.nspname != 'information_schema'"
 		." AND relkind NOT IN ('i')"
@@ -207,7 +226,7 @@ sub get_acl_class{
 			}
 		}
 		if(hasmajor(8.4)){
-			my $sql2 = "SELECT '\"' || attname || '\"',COALESCE(array_to_string(attacl,E'\\n'),'')"
+			my $sql2 = "SELECT '\"' || attname || '\"',COALESCE(array_to_string(attacl,$escape_char'\\n'),'')"
 				." FROM pg_attribute WHERE attrelid = $tab[4] AND attacl IS NOT NULL;";
 			my $req2 = $db->prepare($sql2);
 			$req2->execute();
