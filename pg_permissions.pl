@@ -25,6 +25,7 @@ my $user			= '';
 my $port			= '';
 my $outfile			= '';
 my $role			= '';
+my $maintenancedb		= 'postgres';
 
 # Others
 my $connected			= 0;
@@ -44,6 +45,7 @@ my $role_table_name		= 'rolname';
 my $result = GetOptions(
 	"h|host=s"		=> \$host,
 	"H|help!"		=> \$help,
+	"m|maintenance=s"	=> \$maintenancedb,
 	"p|port=i"		=> \$port,
 	"U|user=s"		=> \$user,
 	"o|outfiles=s"		=> \$outfile,
@@ -57,12 +59,10 @@ if ($ver){
 	exit 0;
 }
 &usage() if ($help);
-print "1\n";
 # Connect to database and initialize version specific parameters
 connect_db();
-print "2\n";
+
 $pgversion = get_pgversion();
-print $pgversion;exit 0;
 $escape_char='E' if (hasmajor(8.1));
 $role_table='pg_user' if (!hasmajor(8.1));
 $role_table_pk='usesysid' if (!hasmajor(8.1));
@@ -105,7 +105,7 @@ sub build_conninfo{
 	$conninfo .= " port=$port" if ($port ne '');
 	$conninfo .= " host=$host" if ($host ne '');
 	if ((! defined $current_db) || ( $current_db eq '')){
-		$conninfo .= " dbname=postgres"; #.(hasmajor(8.2)?"postgres":'template1');
+		$conninfo .= " dbname=$maintenancedb";
 	}else{
 		$conninfo .= " dbname=$current_db";
 	}
@@ -375,6 +375,9 @@ Otions:
 	-d | --dbname			: limit result to a single database.
 	-h | --host hostname		: host to connect on.
 	-H | --help			: show this message and exit.
+	-m | --maintenance		: specify maintenance database to use (<= 8.1).
+					  Only used without -d.
+					  If none specified, postgres will be used.
 	-p | --port port_number		: port to connect on.
 	-r | --role rolename		: limit result to a single role name.
 	-U | --user username		: username to use to connect.
