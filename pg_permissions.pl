@@ -16,7 +16,7 @@ use DBI;
 use Getopt::Long qw(:config no_ignore_case bundling);
 #use IO::File;
 
-$VERSION = '0.2';
+$VERSION = '0.3';
 
 # Command line options
 my $dbname			= '';
@@ -74,20 +74,22 @@ if ($dbname eq ''){
 	@dblist = ($dbname);
 }
 
+#Global ACLs
 get_acl_roles();
 
-my $sql2;
+my $sql;
 
 if (hasmajor(8.0)){
-	$sql2 = "SELECT '\"' || spcname || '\"', pg_get_userbyid(spcowner),COALESCE(array_to_string(spcacl,$escape_char'\\n'),'')"
+	$sql = "SELECT '\"' || spcname || '\"', pg_get_userbyid(spcowner),COALESCE(array_to_string(spcacl,$escape_char'\\n'),'')"
 		." FROM pg_tablespace";
-	get_acl_prm($sql2,"Tablespace");
+	get_acl_prm($sql,"Tablespace");
 }
 
-$sql2 = "SELECT '\"' || lanname || '\"', ".(hasmajor(8.3)?'pg_get_userbyid(lanowner)':"''").",COALESCE(array_to_string(lanacl,$escape_char'\\n'),'')"
+$sql = "SELECT '\"' || lanname || '\"', ".(hasmajor(8.3)?'pg_get_userbyid(lanowner)':"''").",COALESCE(array_to_string(lanacl,$escape_char'\\n'),'')"
 		." FROM pg_language";
-get_acl_prm($sql2,"Language");
+get_acl_prm($sql,"Language");
 
+#Database specific ACLs
 foreach my $current_db (@dblist){
 	get_db_permissions($current_db);
 }
@@ -227,14 +229,14 @@ sub get_acl_roles{
 #    $current_db	: chosen database
 sub get_acl_class{
 	my ($current_db) = @_;
-	my $sql;
+	my $_sql;
 	print 'database "'.$current_db.'"'."\n";
 
-	$sql = "SELECT '\"' || n.nspname || '\"',pg_get_userbyid(n.nspowner),COALESCE(array_to_string(n.nspacl,$escape_char'\\n'),'')"
+	$_sql = "SELECT '\"' || n.nspname || '\"',pg_get_userbyid(n.nspowner),COALESCE(array_to_string(n.nspacl,$escape_char'\\n'),'')"
 		." FROM pg_namespace n WHERE n.nspname !~ '^pg_' AND n.nspname <> 'information_schema';";
-	get_acl_prm($sql,'Schema');
+	get_acl_prm($_sql,'Schema');
 
-	$sql  = "SELECT '\"' || n.nspname || '\".\"' || p.proname || '\"',r.$role_table_name,"
+	$_sql  = "SELECT '\"' || n.nspname || '\".\"' || p.proname || '\"(' || pg_get_function_arguments(p.oid) || ')',r.$role_table_name,"
 		." COALESCE(array_to_string(p.proacl,$escape_char'\\n'),'')"
 		." FROM pg_proc p"
 		." JOIN pg_namespace n ON p.pronamespace = n.oid"
@@ -242,9 +244,15 @@ sub get_acl_class{
 		." WHERE n.nspname !~ 'pg_'"
 		." AND n.nspname != 'information_schema'"
 		." ORDER BY proname;";
-	get_acl_prm($sql,'Function');
+	get_acl_prm($_sql,'Function');
 
-	$sql  = "SELECT c.relkind,'\"' || n.nspname || '\".\"' || c.relname || '\"',r.$role_table_name ,"
+	if (hasmajor(8.4)){
+		$_sql = "SELECT '\"' || fdwname || '\"', pg_get_userbyid(fdwowner), COALESCE(array_to_string(fdwacl,$escape_char'\\n'),'')"
+			." FROM pg_foreign_data_wrapper";
+		get_acl_prm($_sql,"Foreign Data Wrapper");
+	}
+
+	$_sql  = "SELECT c.relkind,'\"' || n.nspname || '\".\"' || c.relname || '\"',r.$role_table_name ,"
 		." COALESCE(array_to_string(c.relacl,$escape_char'\\n'),''),c.oid"
 		." FROM pg_class c"
 		." JOIN pg_namespace n ON c.relnamespace = n.oid"
@@ -253,7 +261,7 @@ sub get_acl_class{
 		." AND n.nspname != 'information_schema'"
 		." AND relkind NOT IN ('i')"
 		." ORDER BY relkind,relname;";
-	$req = $db->prepare($sql);
+	$req = $db->prepare($_sql);
 	$req->execute();
 	my $current_obj = '';
 	while (@tab = $req->fetchrow_array()){
@@ -262,7 +270,7 @@ sub get_acl_class{
 			$current_obj = $tab [1];
 		}
 		my @tabacl = split('\n',$tab[3]);
-		print "    Default\n" if($tab[3] eq '');
+		print "    Default ACL\n    Owner: $tab[2]\n" if($tab[3] eq '');
 		foreach my $acl (@tabacl){
 			my $first_delim = index($acl,'=');
 			my $current_role = substr($acl,0,$first_delim);
@@ -273,9 +281,9 @@ sub get_acl_class{
 			}
 		}
 		if(hasmajor(8.4)){
-			my $sql2 = "SELECT '\"' || attname || '\"',COALESCE(array_to_string(attacl,$escape_char'\\n'),'')"
+			my $sql = "SELECT '\"' || attname || '\"',COALESCE(array_to_string(attacl,$escape_char'\\n'),'')"
 				." FROM pg_attribute WHERE attrelid = $tab[4] AND attacl IS NOT NULL;";
-			my $req2 = $db->prepare($sql2);
+			my $req2 = $db->prepare($sql);
 			$req2->execute();
 			while(my @tab2 = $req2->fetchrow_array()){
 				my @tabacl2 = split('\n',$tab2[1]);
@@ -306,7 +314,7 @@ sub get_acl_prm{
 	while (@tab = $req->fetchrow_array()){
 		print "  $kind $tab[0]\n";
 		my @tabacl = split('\n',$tab[2]);
-		print "    Default\n" if($tab[2] eq '');
+		print "    Default ACL\n    Owner: $tab[1]\n" if($tab[2] eq '');
 		foreach my $acl (@tabacl){
 			my $first_delim = index($acl,"=");
 			my $current_role = substr($acl,0,$first_delim);
